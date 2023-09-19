@@ -63,6 +63,17 @@ export class GitHubGlue {
         this.workDir = workDir;
     }
 
+    public async addReaction(owner: string, repo: string, commentID: number,
+            reaction: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes"): Promise<void> {
+        await this.ensureAuthenticated(owner);
+        await this.client.rest.reactions.createForIssueComment({
+            owner,
+            repo,
+            comment_id: commentID,
+            content: reaction
+        });
+    }
+
     public async annotateCommit(originalCommit: string, gitGitCommit: string,
                                 repositoryOwner: string, baseOwner: string): Promise<number> {
         const output =

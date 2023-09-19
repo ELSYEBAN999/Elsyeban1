@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build-dist": "ncc build -s -m ./lib/ci-helper.ts -o dist",
     "cleanbranch": "node ./build/script/delete-test-branches.js",
     "lint": "eslint -c .eslintrc.js --ext .ts,.js \"{lib,script,tests,tests-config}/**/*.{ts,tsx,js}\"",
     "start": "node server.js",
@@ -24,7 +25,7 @@
   },
   "homepage": "https://gitgitgadget.github.io/",
   "files": [
-      "lib/*.ts"
+    "lib/*.ts"
   ],
   "jest": {
     "moduleFileExtensions": [
@@ -62,9 +63,11 @@
     "typescript": "^5.2.2"
   },
   "dependencies": {
+    "@actions/core": "^1.10.0",
     "@octokit/auth-app": "^6.0.0",
     "@octokit/request-error": "^5.0.0",
     "@octokit/rest": "^20.0.1",
+    "@vercel/ncc": "^0.36.1",
     "commander": "^11.0.0",
     "dugite": "^2.5.1",
     "html-to-text": "^9.0.5",

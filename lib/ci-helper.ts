@@ -1,17 +1,21 @@
 import * as fs from "fs";
 import * as util from "util";
 import addressparser from "nodemailer/lib/addressparser";
+import * as core from "@actions/core";
+import { createAppAuth } from "@octokit/auth-app";
+import { Octokit } from "@octokit/rest";
 import { ILintError, LintCommit } from "./commit-lint";
-import { commitExists, git, emptyTreeName } from "./git";
+import { commitExists, git, emptyTreeName, gitConfig } from "./git";
 import { GitNotes } from "./git-notes";
 import { GitGitGadget, IGitGitGadgetOptions } from "./gitgitgadget";
+import { getConfig } from "./gitgitgadget-config";
 import { GitHubGlue, IGitHubUser, IPRComment, IPRCommit, IPullRequestInfo, RequestError } from "./github-glue";
 import { toPrettyJSON } from "./json-util";
 import { MailArchiveGitHelper } from "./mail-archive-helper";
 import { MailCommitMapping } from "./mail-commit-mapping";
 import { IMailMetadata } from "./mail-metadata";
 import { IPatchSeriesMetadata } from "./patch-series-metadata";
-import { IConfig, getConfig } from "./project-config";
+import { IConfig, getExternalConfig, setConfig } from "./project-config";
 import { getPullRequestKeyFromURL, pullRequestKey } from "./pullRequestKey";
 
 const readFile = util.promisify(fs.readFile);
@@ -25,7 +29,7 @@ type CommentFunction = (comment: string) => Promise<void>;
  * commit.
  */
 export class CIHelper {
-    public readonly config: IConfig = getConfig();
+    public readonly config: IConfig;
     public readonly workDir: string;
     public readonly notes: GitNotes;
     public readonly urlBase: string;
@@ -39,7 +43,12 @@ export class CIHelper {
     private mail2CommitMapUpdated: boolean;
     protected maxCommitsExceptions: string[];
 
-    public constructor(workDir: string, skipUpdate?: boolean, gggConfigDir = ".") {
+    public static async getConfig(configFile?: string):Promise<IConfig> {
+        return configFile ? await getExternalConfig(configFile) : getConfig();
+    }
+
+    public constructor(workDir: string, config: IConfig, skipUpdate?: boolean, gggConfigDir = ".") {
+        this.config = config !== undefined ? setConfig(config) : getConfig();
         this.gggConfigDir = gggConfigDir;
         this.workDir = workDir;
         this.notes = new GitNotes(workDir);
@@ -849,6 +858,56 @@ GitGitGadget needs an email address to Cc: you on your contribution, so that you
         }
 
         return optionsChanged;
+    }
+
+    public async configureGitHubAppToken(options: {
+             appID: number;
+             installationID?: number;
+             name: string;
+             privateKey?: string;
+        }, storeInGitConfig: boolean = true): Promise<string> {
+        if (!options.privateKey) {
+            const appName = options.name === this.config.app.name ? this.config.app.name : this.config.app.altname;
+            const appNameKey = `${appName}.privateKey`;
+            const appNameVar = appNameKey.toUpperCase().replace(/\./, "_");
+            const key = process.env[appNameVar] ? process.env[appNameVar] : await gitConfig(appNameKey);
+
+            if (!key) {
+                throw new Error(`Need the ${appName} App's private key`);
+            }
+
+            options.privateKey = key.replace(/\\n/g, `\n`);
+        }
+
+        const client = new Octokit({
+            authStrategy: createAppAuth,
+            auth: {
+                appId: options.appID,
+                privateKey: options.privateKey
+            }
+        });
+
+        if (options.installationID === undefined) {
+            options.installationID =
+                (await client.rest.apps.getRepoInstallation({
+                    owner: options.name,
+                    repo: this.config.repo.name,
+            })).data.id;
+        }
+        const result = await client.rest.apps.createInstallationAccessToken(
+            {
+                installation_id: options.installationID,
+            });
+        if (storeInGitConfig) {
+            const configKey = options.name === this.config.app.name ?
+                `${this.config.app.name}.githubToken` : `gitgitgadget.${options.name}.githubToken`;
+            await git(["config", configKey, result.data.token]);
+        }
+        return result.data.token;
+    };
+
+    public static getActionsCore(): typeof import("@actions/core") {
+        return core;
     }
 
     private async getPRInfo(prKey: pullRequestKey): Promise<IPullRequestInfo> {

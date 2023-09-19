@@ -1,17 +1,13 @@
-import { createAppAuth } from "@octokit/auth-app";
-import { Octokit } from "@octokit/rest";
 import { Command } from "commander";
 import { CIHelper } from "../lib/ci-helper";
 import { isDirectory } from "../lib/fs-util";
-import { git, gitConfig } from "../lib/git";
+import { git } from "../lib/git";
 import { IGitGitGadgetOptions, getVar } from "../lib/gitgitgadget";
-import { getConfig } from "../lib/gitgitgadget-config";
 import { GitHubGlue } from "../lib/github-glue";
 import { toPrettyJSON } from "../lib/json-util";
 import { IGitMailingListMirrorState, stateKey } from "../lib/mail-archive-helper";
 import { IPatchSeriesMetadata } from "../lib/patch-series-metadata";
-import { IConfig, loadConfig, setConfig } from "../lib/project-config";
-import path from "path";
+import { IConfig } from "../lib/project-config";
 
 const commander = new Command();
 const publishRemoteKey = "publishRemote";
@@ -49,8 +45,7 @@ if (commander.args.length === 0) {
 const commandOptions = commander.opts<ICommanderOptions>();
 
 (async (): Promise<void> => {
-    const config: IConfig = commandOptions.config ? setConfig(await getExternalConfig(commandOptions.config))
-        : getConfig();
+    const config: IConfig = await CIHelper.getConfig(commandOptions.config);
 
     const getGitGitWorkDir = async (): Promise<string> => {
         if (!commandOptions.gitWorkDir) {
@@ -71,7 +66,7 @@ const commandOptions = commander.opts<ICommanderOptions>();
         return commandOptions.gitWorkDir;
     };
 
-    const ci = new CIHelper(await getGitGitWorkDir(), commandOptions.skipUpdate,
+    const ci = new CIHelper(await getGitGitWorkDir(), config, commandOptions.skipUpdate,
         commandOptions.gitgitgadgetWorkDir);
 
     const command = commander.args[0];
@@ -364,47 +359,9 @@ const commandOptions = commander.opts<ICommanderOptions>();
         const glue = new GitHubGlue(ci.workDir, config.repo.owner, config.repo.name);
         await glue.addPRComment(pullRequestURL, comment);
     } else if (command === "set-app-token") {
-        const set = async (options: {
-             appID: number;
-             installationID?: number;
-             name: string;
-        }): Promise<void> => {
-            const appName = options.name === config.app.name ? config.app.name : config.app.altname;
-            const appNameKey = `${appName}.privateKey`;
-            const appNameVar = appNameKey.toUpperCase().replace(/\./, "_");
-            const key = process.env[appNameVar] ? process.env[appNameVar] : await gitConfig(appNameKey);
-
-            if (!key) {
-                throw new Error(`Need the ${appName} App's private key`);
-            }
-
-            const client = new Octokit({
-                authStrategy: createAppAuth,
-                auth: {
-                    appId: options.appID,
-                    privateKey: key.replace(/\\n/g, `\n`)
-                }
-            });
-
-            if (options.installationID === undefined) {
-                options.installationID =
-                    (await client.rest.apps.getRepoInstallation({
-                        owner: options.name,
-                        repo: config.repo.name,
-                })).data.id;
-            }
-            const result = await client.rest.apps.createInstallationAccessToken(
-                {
-                    installation_id: options.installationID,
-                });
-            const configKey = options.name === config.app.name ?
-                `${config.app.name}.githubToken` : `gitgitgadget.${options.name}.githubToken`;
-            await git(["config", configKey, result.data.token]);
-        };
-
-        await set(config.app);
+        await ci.configureGitHubAppToken(config.app);
         for (const org of commander.args.slice(1)) {
-            await set({ appID: 46807, name: org});
+            await ci.configureGitHubAppToken({ appID: 46807, name: org});
         }
     } else if (command === "handle-pr-comment") {
         if (commander.args.length !== 2 && commander.args.length !== 3) {
@@ -445,22 +402,3 @@ const commandOptions = commander.opts<ICommanderOptions>();
     process.stderr.write(`Caught error ${reason}:\n${reason.stack}\n`);
     process.exit(1);
 });
-
-async function getExternalConfig(file: string): Promise<IConfig> {
-    const filePath = path.resolve(file);
-    const newConfig = await loadConfig(filePath);
-
-    if (!newConfig.hasOwnProperty("project")) {
-        throw new Error(`User configurations must have a 'project:'.  Not found in ${filePath}`);
-    }
-
-    if (!newConfig.repo.owner.match(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i)) {
-        throw new Error(`Invalid 'owner' ${newConfig.repo.owner} in ${filePath}`);
-    }
-
-    if (!newConfig.repo.baseOwner.match(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i)) {
-        throw new Error(`Invalid 'baseOwner' ${newConfig.repo.baseOwner} in ${filePath}`);
-    }
-
-    return newConfig;
-}
